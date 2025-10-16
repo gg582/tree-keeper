@@ -1,0 +1,3 @@
+knowledge graphs provide structured representations of information
+language models often rely on sequential token dependencies
+this project explores a parent child training signal for text graphs
