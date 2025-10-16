@@ -5,25 +5,32 @@ import argparse
 from pathlib import Path
 from typing import Iterable
 
-import requests
-
-API_URL = "https://en.wikipedia.org/w/api.php"
+import wikipedia
+from wikipedia.exceptions import DisambiguationError, PageError, RedirectError
 
 
 def fetch_sentences(topic: str, sentences: int) -> Iterable[str]:
-    params = {
-        "action": "query",
-        "prop": "extracts",
-        "explaintext": True,
-        "titles": topic,
-        "format": "json",
-    }
-    response = requests.get(API_URL, params=params, timeout=30)
-    response.raise_for_status()
-    payload = response.json()
-    pages = payload.get("query", {}).get("pages", {})
-    text = next(iter(pages.values())).get("extract", "")
-    return [sent.strip() for sent in text.split(".\n") if sent.strip()][:sentences]
+    """Return up to ``sentences`` cleaned sentences for ``topic``.
+
+    The :mod:`wikipedia` package provides a compliant wrapper around the
+    MediaWiki API which automatically sets an appropriate user agent.  We
+    attempt to resolve simple disambiguation pages by picking the first option
+    and surface any other errors with a clear message so callers can handle
+    them.
+    """
+
+    wikipedia.set_lang("en")
+    try:
+        page = wikipedia.page(topic, auto_suggest=False, preload=False)
+    except DisambiguationError as exc:
+        page = wikipedia.page(exc.options[0], auto_suggest=False, preload=False)
+    except RedirectError as exc:
+        page = wikipedia.page(exc.title, auto_suggest=False, preload=False)
+    except PageError as exc:
+        raise RuntimeError(f"Topic '{topic}' could not be resolved: {exc}") from exc
+
+    sentences_iter = [segment.strip() for segment in page.content.split(".\n") if segment.strip()]
+    return sentences_iter[:sentences]
 
 
 def main() -> None:

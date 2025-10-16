@@ -4,22 +4,25 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import List
+from typing import TYPE_CHECKING, List
 
 import torch
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from dodag_lm.config import TrainingConfig
-from dodag_lm.model import DodagLanguageModel
-from dodag_lm.vocab import Vocabulary
+from dodag_lm.utils import load_checkpoint
+
+if TYPE_CHECKING:
+    from dodag_lm.config import TrainingConfig
+    from dodag_lm.model import DodagLanguageModel
+    from dodag_lm.vocab import Vocabulary
 
 logger = logging.getLogger(__name__)
 app = FastAPI(title="DoDAG Language Model", version="0.1.0")
 
-MODEL: DodagLanguageModel | None = None
-VOCAB: Vocabulary | None = None
-CONFIG: TrainingConfig | None = None
+MODEL: "DodagLanguageModel | None" = None
+VOCAB: "Vocabulary | None" = None
+CONFIG: "TrainingConfig | None" = None
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
@@ -42,19 +45,7 @@ def load_artifacts() -> None:
         logger.warning("Model file %s not found; startup continues without model", model_path)
         return
 
-    payload = torch.load(model_path, map_location=DEVICE)
-    tokens = payload["vocab"]
-    config_dict = payload["config"]
-
-    VOCAB = Vocabulary()
-    VOCAB.idx_to_token = tokens
-    VOCAB.token_to_idx = {token: idx for idx, token in enumerate(tokens)}
-
-    CONFIG = TrainingConfig(**config_dict)
-    MODEL = DodagLanguageModel(len(VOCAB), CONFIG.embedding_dim, CONFIG.hidden_dim)
-    MODEL.load_state_dict(payload["model_state"])
-    MODEL.to(DEVICE)
-    MODEL.eval()
+    MODEL, VOCAB, CONFIG = load_checkpoint(model_path, DEVICE)
     logger.info("Model loaded from %s", model_path)
 
 

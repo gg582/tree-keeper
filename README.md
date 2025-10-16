@@ -37,8 +37,8 @@ represents a vocabulary item and edges capture parent→child dependencies.
    ```
 
 2. **Prepare data**. A small toy corpus is provided at
-   `data/sample_corpus.txt`. To fetch a lightweight Wikipedia sample you can
-   run:
+   `data/sample_corpus.txt`. To fetch a lightweight Wikipedia sample via the
+   `wikipedia` Python package you can run:
 
    ```bash
    python scripts/prepare_sample_wiki.py "Large language model" --sentences 50 --output data/wiki_sample.txt
@@ -69,6 +69,12 @@ represents a vocabulary item and edges capture parent→child dependencies.
    curl -X POST http://localhost:11435/predict \
         -H "Content-Type: application/json" \
         -d '{"context": ["language"], "top_k": 3}'
+   ```
+
+5. **Chat interactively** with a trained checkpoint using the bundled CLI:
+
+   ```bash
+   python scripts/chatbot.py model.pt --max-tokens 20 --top-k 5 --temperature 0.9
    ```
 
 ## CUDA Extension
