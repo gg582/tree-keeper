@@ -60,7 +60,12 @@ def load_checkpoint(model_path: Path | str, device: Optional[str] = None) -> tup
     vocab.token_to_idx = {token: idx for idx, token in enumerate(tokens)}
 
     config = TrainingConfig(**config_dict)
-    model = DodagLanguageModel(len(vocab), config.embedding_dim, config.hidden_dim)
+    model = DodagLanguageModel(
+        len(vocab),
+        config.embedding_dim,
+        config.hidden_dim,
+        config.mixture_components,
+    )
     model.load_state_dict(payload["model_state"])
     model.to(device)
     model.eval()

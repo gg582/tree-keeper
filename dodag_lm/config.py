@@ -10,6 +10,7 @@ class TrainingConfig:
 
     embedding_dim: int = 96
     hidden_dim: int = 128
+    mixture_components: int = 4
     negative_samples: int = 6
     learning_rate: float = 1e-3
     weight_decay: float = 1e-4
@@ -24,6 +25,7 @@ class TrainingConfig:
         return {
             "embedding_dim": self.embedding_dim,
             "hidden_dim": self.hidden_dim,
+            "mixture_components": self.mixture_components,
             "negative_samples": self.negative_samples,
             "learning_rate": self.learning_rate,
             "weight_decay": self.weight_decay,

@@ -39,7 +39,12 @@ def train(
     """Train a DoDAG language model and return the fitted module."""
 
     set_seed(config.seed)
-    model = DodagLanguageModel(vocab_size, config.embedding_dim, config.hidden_dim).to(device)
+    model = DodagLanguageModel(
+        vocab_size,
+        config.embedding_dim,
+        config.hidden_dim,
+        config.mixture_components,
+    ).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=config.learning_rate,
