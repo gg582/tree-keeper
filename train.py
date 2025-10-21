@@ -23,6 +23,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=8)
     parser.add_argument("--embedding-dim", type=int, default=96)
     parser.add_argument("--hidden-dim", type=int, default=128)
+    parser.add_argument("--mixture-components", type=int, default=4)
     parser.add_argument("--negative-samples", type=int, default=6)
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
@@ -40,6 +41,7 @@ def main() -> None:
     config = TrainingConfig(
         embedding_dim=args.embedding_dim,
         hidden_dim=args.hidden_dim,
+        mixture_components=args.mixture_components,
         negative_samples=args.negative_samples,
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
