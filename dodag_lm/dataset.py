@@ -113,10 +113,10 @@ def build_dodag_from_dependency_trees(
             child_id = encoded[child_idx]
             if head_idx == -1:
                 parent_id = root_id
-            else:
-                if head_idx < 0 or head_idx >= len(encoded):
-                    continue
+            elif 0 <= head_idx < len(encoded):
                 parent_id = encoded[head_idx]
+            else:
+                continue
             graph.add_edge(parent_id, child_id)
 
         if include_sequential_edges and encoded:
