@@ -12,6 +12,7 @@ from torch.utils.data import Dataset
 from .graph import DodagGraph
 from .vocab import Vocabulary
 from .utils import sliding_window
+from .text_processing import DependencyTree
 
 
 class DodagGraphDataset(Dataset[Tuple[int, int, torch.Tensor]]):
@@ -86,6 +87,46 @@ def build_dodag_from_corpus(
             if parent_idx is None or child_idx is None:
                 continue
             graph.add_edge(parent_idx, child_idx)
+
+    return graph, vocab
+
+
+def build_dodag_from_dependency_trees(
+    trees: Sequence[DependencyTree],
+    vocab: Vocabulary | None = None,
+    include_sequential_edges: bool = True,
+    window: int = 2,
+) -> tuple[DodagGraph, Vocabulary]:
+    """Construct a DoDAG graph from dependency parsed sentences."""
+
+    token_corpus = [tree.tokens for tree in trees]
+    if vocab is None:
+        vocab = Vocabulary()
+        vocab.build_from_corpus(token_corpus)
+
+    root_id = vocab.encode(Vocabulary.root_token)
+    graph = DodagGraph(root_id)
+
+    for tree in trees:
+        encoded = [vocab.encode(tok) for tok in tree.tokens]
+        for child_idx, head_idx in enumerate(tree.heads):
+            child_id = encoded[child_idx]
+            if head_idx == -1:
+                parent_id = root_id
+            else:
+                if head_idx < 0 or head_idx >= len(encoded):
+                    continue
+                parent_id = encoded[head_idx]
+            graph.add_edge(parent_id, child_id)
+
+        if include_sequential_edges and encoded:
+            sequential = [root_id] + encoded
+            for parent_idx, child_idx in sliding_window(
+                sequential, window_size=window + 1
+            ):
+                if parent_idx is None or child_idx is None:
+                    continue
+                graph.add_edge(parent_idx, child_idx)
 
     return graph, vocab
 
