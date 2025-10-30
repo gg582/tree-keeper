@@ -5,8 +5,91 @@ from typing import Optional
 
 import torch
 from torch import nn
+import torch.nn.functional as F
 
 from . import cuda_backend
+
+
+class HebbianGroupMemory(nn.Module):
+    """Neuro-inspired associative memory for grouping related tokens."""
+
+    def __init__(
+        self,
+        embedding_dim: int,
+        groups: int,
+        decay: float = 0.97,
+        temperature: float = 0.7,
+        eps: float = 1e-6,
+    ) -> None:
+        super().__init__()
+        if groups < 1:
+            raise ValueError("groups must be >= 1")
+        if not 0.0 < decay <= 1.0:
+            raise ValueError("decay must be in (0, 1]")
+        self.decay = decay
+        self.temperature = max(temperature, eps)
+        self.eps = eps
+        patterns = torch.randn(groups, embedding_dim)
+        patterns = F.normalize(patterns, dim=-1)
+        self.register_buffer("patterns", patterns)
+        self.register_buffer("usage", torch.ones(groups))
+
+    @property
+    def groups(self) -> int:
+        return self.patterns.size(0)
+
+    def assign(self, pair_embed: torch.Tensor) -> torch.Tensor:
+        """Return soft assignments of pairs to group prototypes."""
+
+        if pair_embed.numel() == 0:
+            return torch.empty(
+                *pair_embed.shape[:-1],
+                self.groups,
+                device=pair_embed.device,
+                dtype=pair_embed.dtype,
+            )
+
+        flat = pair_embed.reshape(-1, pair_embed.size(-1))
+        queries = F.normalize(flat, dim=-1)
+        patterns = F.normalize(self.patterns, dim=-1)
+        logits = queries @ patterns.t()
+        homeostasis = torch.log(self.usage.clamp_min(self.eps))
+        logits = logits - homeostasis.unsqueeze(0)
+        logits = logits / self.temperature
+        weights = torch.softmax(logits, dim=-1)
+        return weights.view(*pair_embed.shape[:-1], self.groups)
+
+    def update(self, pair_embed: torch.Tensor, assignments: torch.Tensor) -> None:
+        """Hebbian-style update of group prototypes."""
+
+        if not self.training:
+            return
+        if pair_embed.numel() == 0:
+            return
+
+        flat_embed = pair_embed.reshape(-1, pair_embed.size(-1))
+        flat_assign = assignments.reshape(-1, assignments.size(-1))
+        if flat_assign.numel() == 0:
+            return
+
+        weights_sum = flat_assign.sum(dim=0)
+        valid = weights_sum > 0
+        if not torch.any(valid):
+            return
+
+        with torch.no_grad():
+            self.usage.mul_(self.decay)
+            usage_updates = weights_sum[valid]
+            self.usage[valid] = self.usage[valid] + (1 - self.decay) * usage_updates
+
+            updates = torch.zeros_like(self.patterns)
+            updates[valid] = flat_assign[:, valid].t() @ flat_embed
+            updates[valid] = updates[valid] / (weights_sum[valid].unsqueeze(-1) + self.eps)
+
+            current = self.patterns[valid]
+            blended = current * self.decay + (1 - self.decay) * updates[valid]
+            blended = F.normalize(blended, dim=-1)
+            self.patterns[valid] = blended
 
 
 class _DodagUnit(nn.Module):
@@ -33,15 +116,13 @@ class _DodagUnit(nn.Module):
 
 
 class DodagLanguageModel(nn.Module):
-    """A mixture-based parent/child bilinear language model.
+    """Parent/child bilinear model with grouped DoDAG dynamics.
 
-    The original DoDAG model used a single projection tower for parent and child
-    embeddings.  That design makes it difficult for the model to specialise on
-    fragmented relational structure.  We instead maintain multiple projection
-    units and learn a soft gating function that assigns every edge to a
-    component-specific DoDAG.  This keeps the overall DoDAG intuition while
-    allowing the network to pick unit-specific representations when different
-    token relations conflict with one another.
+    The network replaces a conventional recurrent cell with a single DoDAG that
+    is internally organised into a handful of associative groups. Each group
+    acts like a bundle of tensors reserved for semantically related words. A
+    Hebbian memory module encourages tokens that frequently co-occur to share a
+    group, mirroring prior neurobiological models of cell assemblies.
     """
 
     def __init__(
@@ -50,6 +131,8 @@ class DodagLanguageModel(nn.Module):
         embedding_dim: int,
         hidden_dim: int,
         mixture_components: int,
+        hebbian_decay: float = 0.97,
+        hebbian_temperature: float = 0.7,
     ) -> None:
         super().__init__()
         if mixture_components < 1:
@@ -61,10 +144,11 @@ class DodagLanguageModel(nn.Module):
         )
         self.parent_norm = nn.LayerNorm(embedding_dim)
         self.child_norm = nn.LayerNorm(embedding_dim)
-        self.gating = nn.Sequential(
-            nn.Linear(embedding_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, mixture_components),
+        self.memory = HebbianGroupMemory(
+            embedding_dim,
+            mixture_components,
+            decay=hebbian_decay,
+            temperature=hebbian_temperature,
         )
 
     @property
@@ -83,9 +167,8 @@ class DodagLanguageModel(nn.Module):
         ]
         return torch.stack(projections, dim=1)
 
-    def _gating_weights(self, parent_embed: torch.Tensor) -> torch.Tensor:
-        logits = self.gating(parent_embed)
-        return logits.softmax(dim=-1)
+    def _group_assignments(self, pair_embed: torch.Tensor) -> torch.Tensor:
+        return self.memory.assign(pair_embed)
 
     def forward(
         self,
@@ -98,7 +181,10 @@ class DodagLanguageModel(nn.Module):
 
         parent_proj = self._project_parents(parent_embed)
         child_proj = self._project_children(child_embed)
-        gates = self._gating_weights(parent_embed)
+        pair_embed = 0.5 * (parent_embed + child_embed)
+        gates = self._group_assignments(pair_embed)
+        if self.training:
+            self.memory.update(pair_embed.detach(), gates.detach())
 
         unit_scores = cuda_backend.bilinear_score(parent_proj, child_proj)
         positive_scores = (gates * unit_scores).sum(dim=-1)
@@ -109,19 +195,24 @@ class DodagLanguageModel(nn.Module):
             neg_proj = self._project_children(neg_embed)
             parent_proj_expanded = parent_proj.unsqueeze(2).expand_as(neg_proj)
             unit_neg_scores = cuda_backend.bilinear_score(parent_proj_expanded, neg_proj)
-            negative_scores = (gates.unsqueeze(-1) * unit_neg_scores).sum(dim=1)
+            neg_pair_embed = 0.5 * (parent_embed.unsqueeze(1) + neg_embed)
+            neg_gates = self._group_assignments(neg_pair_embed).transpose(1, 2)
+            negative_scores = (neg_gates * unit_neg_scores).sum(dim=1)
         return positive_scores, negative_scores
 
     def predict_child(self, parent_indices: torch.Tensor) -> torch.Tensor:
         parent_embed = self.embeddings(parent_indices)
-        gates = self._gating_weights(parent_embed)
+        parent_proj = self._project_parents(parent_embed)
 
         logits_per_unit = []
-        for unit in self.units:
-            parent_proj = self.parent_norm(unit.project_parent(parent_embed))
-            child_proj = self.child_norm(unit.project_child(self.embeddings.weight))
-            logits_per_unit.append(parent_proj @ child_proj.t())
+        child_weight = self.embeddings.weight
+        for idx, unit in enumerate(self.units):
+            parent_proj_unit = parent_proj[:, idx, :]
+            child_proj_unit = self.child_norm(unit.project_child(child_weight))
+            logits_per_unit.append(parent_proj_unit @ child_proj_unit.t())
 
-        logits_stack = torch.stack(logits_per_unit, dim=-1)
-        logits = (gates.unsqueeze(1) * logits_stack).sum(dim=-1)
+        logits_stack = torch.stack(logits_per_unit, dim=1)
+        pair_embed = 0.5 * (parent_embed.unsqueeze(1) + child_weight.unsqueeze(0))
+        gates = self._group_assignments(pair_embed).permute(0, 2, 1)
+        logits = (gates * logits_stack).sum(dim=1)
         return logits
